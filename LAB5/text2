@@ -1,0 +1,13 @@
+PARENT 3838 WAITS FOR CHILD 3841 TO DIE
+I am 3841 and my parent = 3838
+Not in: /usr/local/sbin/cat
+Not in: /usr/local/bin/cat
+Not in: /usr/sbin/cat
+Not in: /usr/bin/cat
+Not in: /sbin/cat
+DEAD CHILD = 3840, HOW = 000b
+mysh %: hello
+chicken turtle
+monkey frog
+bananananana
+

@@ -1,0 +1,206 @@
+int mymkdir (char* pathname)
+{
+	char *myDirname = NULL, *myBasename = NULL;
+	char *copy = (char*)malloc (sizeof (char) * strlen (pathname));
+	char *copyTwo = (char*)malloc (sizeof (char) * strlen (pathname));
+	int ino;
+	MINODE *mip;
+
+	// make two copies of the pathname
+	strncpy (copy, pathname, strlen (pathname));
+	strncpy (copyTwo, pathname, strlen (pathname));
+
+	// check if the pathname is absolute
+	if (pathname[0] == '/')
+	{
+		dev = root -> dev;
+	}
+	else
+	{
+		// otherwise change the dev to the cwd's dev
+		dev = running -> cwd -> dev;
+	}
+	
+	myDirname = dirname (copy);		
+	myBasename = basename (copyTwo);
+
+	printf ("dirname = %s basename = %s\n", myDirname, myBasename);
+
+	// check that the dirname exists and is a directory
+	ino = getino (&(running -> cwd -> dev), myDirname);
+	mip = iget (running -> cwd -> dev, ino);
+
+	// check that mip -> inode.i_mode is a dir
+	if (!S_ISDIR(mip -> INODE.i_mode))
+	{
+		printf ("%s is not a directory!\n", myDirname);
+		return -1;
+	}
+	
+	// check that the basename does not already exist in the directory
+	if (search (mip, myBasename) != 0)
+	{
+		printf ("%s already exists!\n", myBasename);
+		return -1;
+	}
+
+	// all checks are good so we can now make the directory
+	kmkdir (mip, myBasename);
+}
+
+kmkdir (MINODE *pmip, char* newBasename)
+{
+	int ino, bno, i;
+	MINODE *mip;
+	char buf[BLKSIZE];
+	
+	// allocate an inode and block
+	ino = ialloc (dev);
+	bno = balloc (dev);
+	
+	// load the inode into a minode
+	mip = iget (dev, ino);
+
+	// initialize mip as a dir
+	mip -> dirty = 1;			// mark it as dirty
+	mip -> INODE.i_mode = 0x41ED;		// DIR permission
+	mip -> INODE.i_uid = running -> uid;	// owner uid
+	mip -> INODE.i_gid = running -> gid;	// group id
+	mip -> INODE.i_size = 1024;		// size in bytes
+	mip -> INODE.i_links_count = 2;		// ways to reach this dir (. and ..)
+	mip -> INODE.i_atime = time (0L);
+	mip -> INODE.i_ctime = time (0L);
+	mip -> INODE.i_mtime = time (0L);
+	mip -> INODE.i_blocks = 2;		// blocks count in 512 byte blocks
+	mip -> INODE.i_block[0] = bno;
+	
+	// 15 i_blocks
+	for (i = 1; i < 15; i++)
+	{
+		// initialize every other i_block to 0
+		mip -> INODE.i_block[i] = 0;
+	}
+
+	// write the INODE back to the disk
+	iput (mip);
+
+	//get_block (dev, bno, buf);
+	
+	// make data block 0 of INODE contain . and ..
+	memset (buf, 0, 1024);
+
+	dp = (DIR*)buf;
+	
+	dp -> inode = ino;			// inode number
+	strcpy (dp -> name, ".");		// file name
+	dp -> name_len = 1;			// name length
+	dp -> rec_len = 12;			// directory entry length
+
+	cp = (char *)buf;
+	cp += dp -> rec_len;			// advance by rec_len
+	dp = (DIR*)cp;
+
+	dp -> inode = pmip -> ino;		// inode number
+	strcpy (dp -> name, "..");		// file name
+	dp -> name_len = 2;			// name length
+	dp -> rec_len = BLKSIZE - 12;		// directory entry length + last entry
+
+	printf ("writing data block %d to disk\n", bno);
+	
+	put_block (dev, bno, buf);
+
+	printf ("enter name: parent = (%d %d) name = %s\n", pmip -> dev, pmip -> ino, newBasename);
+
+	// call the enter_name function to put the inode in the parent
+	enter_name (pmip, ino, newBasename);
+
+	// increment the parent's inode's link count by 1 because
+	// there's a new dir that can reach it
+	pmip -> INODE.i_links_count++;
+
+	// mark the pmip as dirty
+	pmip -> dirty = 1;
+
+	iput (pmip);
+}
+
+enter_name (MINODE *pmip, int ino, char* newBasename)
+{
+	char buf[BLKSIZE];
+	int need_len, remain_len, ideal_len;
+	
+	// calculate the length needed for the newBasename
+	need_len = 4 * ((8 + strlen (newBasename) + 3) / 4);
+
+	// read the parent block into buf
+	get_block (pmip -> dev, pmip -> INODE.i_block[0], buf);
+	
+	dp = (DIR*)buf;
+	cp = (char *)buf;
+
+	// loop to the last entry
+	while (cp + dp -> rec_len < buf + BLKSIZE)
+	{
+		printf ("current dir name = %s\n", dp -> name);
+		cp += dp -> rec_len;
+		dp = (DIR*)cp;
+	}
+
+	// calculate the length needed for the last dir entry
+	ideal_len = 4 * ((8 + dp -> name_len + 3) / 4);
+	remain_len = dp -> rec_len - ideal_len;
+
+	printf ("last entry = %s, last entry rec_len = %d\n", dp -> name, dp -> rec_len);
+	printf ("need len = %d, ideal len = %d, remain_len = %d\n", need_len, ideal_len, remain_len);
+
+	// check if there's enough space on the block
+	if (remain_len >= need_len)
+	{
+		// trim down the last dir entry to the need_len
+		dp -> rec_len = ideal_len;
+
+		// iterate to the next dir entry
+		// (add the new dir here)
+		cp += dp -> rec_len;
+		dp = (DIR*)cp;
+
+		printf ("dp -> name after iterate = %s\n", dp -> name);
+	
+		// initialize the new dir entry
+		dp -> rec_len = remain_len;			// give the remaining space to the new dir
+		dp -> name_len = strlen (newBasename);		// name length is equal to the length of newBasename
+		dp -> inode = ino;				// the dir's inode is the passed in inumber
+		strcpy (dp -> name, newBasename); 		// the dir's name is the passed in basename
+		//dp -> name[strlen (newBasename)] = '\0';
+
+		printf ("basename = %s\n", newBasename);
+		printf ("new name = %s\n", dp -> name);
+
+		put_block(dev, pmip -> INODE.i_block[0], buf);
+	}
+	// not enough space on the block
+	// need to allocate a new block
+	else
+	{
+		printf ("not enough space on block. allocating new block...\n");
+
+		int datab = balloc(pmip->dev);
+		pmip->INODE.i_block[1] = datab;
+		get_block(pmip->dev, datab, buf);
+
+		// enter the new entry as the first entry in the new block
+		dp = (DIR *)buf;
+		dp->rec_len = BLKSIZE;
+		dp->name_len = strlen(newBasename);
+		strcpy(dp->name, newBasename);
+		dp->inode = ino;
+
+		pmip->INODE.i_size += BLKSIZE;
+		
+		// write the new block back to the disk
+		put_block(dev, pmip->INODE.i_block[1], buf);
+	}
+
+	// write the block to the disk
+	put_block (dev, pmip -> INODE.i_block[0], buf);
+}
